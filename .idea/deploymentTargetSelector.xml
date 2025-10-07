@@ -5,19 +5,19 @@
       <SelectionState runConfigName="app">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="GlassEffectWithImage">
+      <SelectionState runConfigName="JellyShape">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="AppleLiquidGlassEffect">
+      <SelectionState runConfigName="PreviewJellyTrackWithDeformingThumb">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="TextSpringWithVelocity">
+      <SelectionState runConfigName="PreviewJellyTrackWithDeformingThumb (1)">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="AppleWatchApp">
+      <SelectionState runConfigName="JellyDemo">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="DeformDemo">
+      <SelectionState runConfigName="JellyShapeDemo">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
     </selectionStates>
