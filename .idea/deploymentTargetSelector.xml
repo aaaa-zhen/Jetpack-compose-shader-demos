@@ -5,19 +5,19 @@
       <SelectionState runConfigName="app">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="JellyShape">
+      <SelectionState runConfigName="Metaball">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="PreviewJellyTrackWithDeformingThumb">
+      <SelectionState runConfigName="OneShader_GlassMetaball_Preview">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="PreviewJellyTrackWithDeformingThumb (1)">
+      <SelectionState runConfigName="PreviewLiquidGlassMeatball">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="JellyDemo">
+      <SelectionState runConfigName="PreviewLiquidGlassMeatball (1)">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
-      <SelectionState runConfigName="JellyShapeDemo">
+      <SelectionState runConfigName="PreviewLiquidGlassTwoMeatball">
         <option name="selectionMode" value="DROPDOWN" />
       </SelectionState>
     </selectionStates>

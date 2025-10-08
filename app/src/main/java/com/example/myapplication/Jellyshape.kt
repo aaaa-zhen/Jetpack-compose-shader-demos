@@ -8,6 +8,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -44,6 +45,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.consumePositionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -54,10 +56,13 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.HapticFeedbackConstantsCompat
+import androidx.core.view.ViewCompat
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.max
@@ -137,21 +142,21 @@ fun JellyShape(){
 
     }
 }
-// -------------------- 可调参数 --------------------
-private const val CONTAINER_OFFSET_FACTOR = 0.10f   // 外层容器视差比例（0.05~0.12）
-private const val RESISTANCE_K = 0.9f               // 橡皮筋阻尼强度（越大越“紧”）
-private const val MAX_OVERDRAG_DP = 250f            // 有效过拉上限（像素映射自 dp）
-private const val TRANSLATION_NUDGE_DP = 10f        // 内层轻微随动
-private const val MAX_STRETCH = 0.30f               // 主轴最大拉伸比例
-private const val SQUASH = 1.25f                    // 正交方向压缩倍数
-private const val DEADZONE_DP = 2f                  // 起始判定死区
-private const val SWITCH_HYSTERESIS_DP = 12f        // 换向迟滞阈值（越大越不易误切）
 
-private enum class Axis { NONE, H, V }
+
+
+// -------------------- 可调参数 --------------------
+private const val CONTAINER_OFFSET_FACTOR = 0.10f
+private const val RESISTANCE_K = 1.2f
+private const val MAX_OVERDRAG_DP = 250f
+private const val TRANSLATION_NUDGE_DP = 10f
+private const val MAX_STRETCH = 0.10f
+private const val SQUASH = 1.05f
+private const val DEADZONE_DP = 2f
 
 // -------------------- 组件 --------------------
 @Composable
-fun KnotButtonWithResistance(
+fun KnotButtonOmniDirection(
     size: Dp,
     onClick: () -> Unit = {}
 ) {
@@ -160,29 +165,37 @@ fun KnotButtonWithResistance(
     val radius = sizePx / 2f
     val view = LocalView.current
 
-    // 形变需要的 layer 尺寸
     var layerW by remember { mutableStateOf(0f) }
     var layerH by remember { mutableStateOf(0f) }
 
-    // 带阻尼的“有效过拉向量”
     val overVec = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val scope = rememberCoroutineScope()
     var dragUpdateJob by remember { mutableStateOf<Job?>(null) }
 
-    // 手势状态
     var pressStart by remember { mutableStateOf(Offset.Zero) }
-    var pivotX by remember { mutableStateOf(0.5f) }
-    var pivotY by remember { mutableStateOf(0.5f) }
-    var axis by remember { mutableStateOf(Axis.NONE) }
-    var hasEnteredOverdrag by remember { mutableStateOf(false) }
+    var hasStartedDrag by remember { mutableStateOf(false) }
 
-    // 参数映射
+    // 🎯 按压缩放状态
+    var isPressed by remember { mutableStateOf(false) }
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 1.1f else 1f,
+        animationSpec = if (isPressed)
+            spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        else
+            spring(
+                stiffness = Spring.StiffnessLow,
+                dampingRatio = Spring.DampingRatioHighBouncy,
+            ),
+        label = "pressScale"
+    )
+
     val maxOverdrag = with(density) { MAX_OVERDRAG_DP.dp.toPx() }
     val translationNudge = with(density) { TRANSLATION_NUDGE_DP.dp.toPx() }
     val deadzone = with(density) { DEADZONE_DP.dp.toPx() }
-    val switchHysteresis = with(density) { SWITCH_HYSTERESIS_DP.dp.toPx() }
 
-    // iOS-like 橡皮筋映射：x -> t*limit，t = x/(x+k*limit)
     fun rubberBand(exceed: Float, limit: Float, k: Float): Float {
         val x = exceed.coerceAtLeast(0f)
         val t = x / (x + k * limit)
@@ -192,127 +205,118 @@ fun KnotButtonWithResistance(
     fun computeOverdragWithResistance(start: Offset, current: Offset): Offset {
         val d = current - start
         val dist = hypot(d.x, d.y)
+
+        if (dist <= deadzone) return Offset.Zero
+
         val exceed = dist - radius
         if (exceed <= 0f) return Offset.Zero
+
         val ux = d.x / max(dist, 1e-3f)
         val uy = d.y / max(dist, 1e-3f)
         val adjusted = rubberBand(exceed, maxOverdrag, RESISTANCE_K)
         return Offset(ux * adjusted, uy * adjusted)
     }
 
-    // 低阶手势：支持中途换向；受限域内不直接调用挂起动画 API
+    fun computePivot(overVec: Offset): Pair<Float, Float> {
+        val mag = hypot(overVec.x, overVec.y)
+        if (mag < 1e-3f) return 0.5f to 0.5f
+
+        val nx = overVec.x / mag
+        val ny = overVec.y / mag
+
+        val pivotX = (0.5f - nx * 0.5f).coerceIn(0f, 1f)
+        val pivotY = (0.5f - ny * 0.5f).coerceIn(0f, 1f)
+
+        return pivotX to pivotY
+    }
+
     val pointerMod = Modifier.pointerInput(Unit) {
         awaitPointerEventScope {
             while (true) {
                 val down = awaitFirstDown()
                 pressStart = down.position
-                axis = Axis.NONE
-                hasEnteredOverdrag = false
+                hasStartedDrag = false
+
+                // 🎯 按下时触发缩放
+                isPressed = true
                 view.performHapticFeedback(HapticFeedbackConstantsCompat.CLOCK_TICK)
 
                 var pointerId = down.id
+
                 while (true) {
                     val event = awaitPointerEvent()
                     val change = event.changes.firstOrNull { it.id == pointerId } ?: continue
 
-                    val d = change.position - pressStart
-                    val ax = abs(d.x)
-                    val ay = abs(d.y)
-
-                    // 判定/切换主轴（带死区+迟滞）
-                    val desired = when {
-                        ax <= deadzone && ay <= deadzone -> Axis.NONE
-                        ax >= ay -> Axis.H
-                        else -> Axis.V
-                    }
-                    when (axis) {
-                        Axis.NONE -> {
-                            if (desired != Axis.NONE) {
-                                axis = desired
-                                if (axis == Axis.H) {
-                                    pivotY = 0.5f
-                                    pivotX = if (d.x < 0f) 1f else 0f
-                                } else {
-                                    pivotX = 0.5f
-                                    pivotY = if (d.y < 0f) 1f else 0f
-                                }
-                            }
-                        }
-                        Axis.H -> {
-                            if (ay - ax > switchHysteresis) {
-                                axis = Axis.V
-                                pivotX = 0.5f
-                                pivotY = if (d.y < 0f) 1f else 0f
-                                view.performHapticFeedback(HapticFeedbackConstantsCompat.CLOCK_TICK)
-                            } else {
-                                pivotY = 0.5f
-                                pivotX = if (d.x < 0f) 1f else 0f
-                            }
-                        }
-                        Axis.V -> {
-                            if (ax - ay > switchHysteresis) {
-                                axis = Axis.H
-                                pivotY = 0.5f
-                                pivotX = if (d.x < 0f) 1f else 0f
-                                view.performHapticFeedback(HapticFeedbackConstantsCompat.CLOCK_TICK)
-                            } else {
-                                pivotX = 0.5f
-                                pivotY = if (d.y < 0f) 1f else 0f
-                            }
-                        }
+                    // 🎯 只有在按压放大后才允许拖动拉伸
+                    val raw = if (pressScale >= 1.05f) {
+                        computeOverdragWithResistance(pressStart, change.position)
+                    } else {
+                        Offset.Zero
                     }
 
-                    // 过拉 + 阻尼 → 交给非受限域的 Job
-                    val raw = computeOverdragWithResistance(pressStart, change.position)
-                    if (!hasEnteredOverdrag && (raw.x != 0f || raw.y != 0f)) {
-                        hasEnteredOverdrag = true
+                    if (!hasStartedDrag && (raw.x != 0f || raw.y != 0f)) {
+                        hasStartedDrag = true
                     }
+
                     dragUpdateJob?.cancel()
                     dragUpdateJob = scope.launch {
-                        overVec.snapTo(raw) // ✅ 非受限域中调用
+                        overVec.snapTo(raw)
                     }
 
-                    // 结束判定
-                    if (!change.pressed) break else change.consume()
+                    if (!change.pressed) break
+                    else change.consume()
                 }
 
-                // 收尾：回弹动画也放进非受限域
+                // 🎯 松手:取消按压 + 回弹拉伸
+                isPressed = false
                 dragUpdateJob?.cancel()
                 scope.launch {
-                    view.performHapticFeedback(HapticFeedbackConstantsCompat.LONG_PRESS)
-                    overVec.animateTo(Offset.Zero, spring(dampingRatio = 1f, stiffness = 200f))
+                    if (hasStartedDrag) {
+                        view.performHapticFeedback(HapticFeedbackConstantsCompat.LONG_PRESS)
+                    }
+                    overVec.animateTo(
+                        Offset.Zero,
+                        spring(
+                            dampingRatio = 1f,
+                            stiffness = 200f,
+                            visibilityThreshold = Offset(.000001f, .000001f)
+                        )
+                    )
                 }
             }
         }
     }
 
-    // —— 视觉派生量 —— //
+    // —— 视觉派生 ——
     val od = overVec.value
     val odMag = hypot(od.x, od.y)
     val overFrac = (odMag / maxOverdrag).coerceIn(0f, 1f)
     val eased = sqrt(overFrac)
-    val s = eased * MAX_STRETCH
 
-    val horizontal = (axis == Axis.H)
-    val scaleX = (if (horizontal) 1f + s else 1f - s * SQUASH).coerceAtLeast(0.6f)
-    val scaleY = (if (horizontal) 1f - s * SQUASH else 1f + s).coerceAtLeast(0.6f)
+    val stretch = eased * MAX_STRETCH
 
-    // 钉边补偿
+    val absX = abs(od.x)
+    val absY = abs(od.y)
+    val total = absX + absY + 1e-3f
+    val xWeight = absX / total
+    val yWeight = absY / total
+
+    val scaleX = (1f + stretch * xWeight - stretch * yWeight * SQUASH).coerceAtLeast(0.6f)
+    val scaleY = (1f + stretch * yWeight - stretch * xWeight * SQUASH).coerceAtLeast(0.6f)
+
+    val (pivotX, pivotY) = computePivot(od)
+
     val compTx = (0.5f - pivotX) * layerW * (scaleX - 1f)
     val compTy = (0.5f - pivotY) * layerH * (scaleY - 1f)
 
-    // 轻微随动（沿过拉方向）
     val nx = if (odMag > 0f) (od.x / odMag) * eased * translationNudge else 0f
     val ny = if (odMag > 0f) (od.y / odMag) * eased * translationNudge else 0f
 
-    // 外层容器放大，避免裁切
-    val extraPadPx =
-        CONTAINER_OFFSET_FACTOR * maxOverdrag +
-                translationNudge +
-                0.5f * sizePx * MAX_STRETCH * SQUASH
+    val extraPadPx = CONTAINER_OFFSET_FACTOR * maxOverdrag + translationNudge +
+            0.5f * sizePx * MAX_STRETCH * SQUASH
     val extraPad = with(density) { extraPadPx.toDp() }
 
-    // ---------------- 外层：容器视差跟随（不裁剪） ----------------
+    // 外层容器
     Box(
         modifier = Modifier
             .size(size + extraPad * 2)
@@ -323,7 +327,7 @@ fun KnotButtonWithResistance(
             },
         contentAlignment = Alignment.Center
     ) {
-        // --------------- 内层：按钮本体（裁剪+形变+补偿+随动） ---------------
+        // 内层按钮
         Box(
             modifier = Modifier
                 .size(size)
@@ -334,8 +338,9 @@ fun KnotButtonWithResistance(
                 .then(pointerMod)
                 .graphicsLayer {
                     transformOrigin = TransformOrigin(pivotX, pivotY)
-                    this.scaleX = scaleX
-                    this.scaleY = scaleY
+                    // 🎯 叠加按压缩放 + 拉伸形变
+                    this.scaleX = scaleX * pressScale
+                    this.scaleY = scaleY * pressScale
                     translationX = compTx + nx
                     translationY = compTy + ny
                     clip = true
@@ -344,11 +349,14 @@ fun KnotButtonWithResistance(
                 .clip(CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            // 纯蓝底 + 白色 X
             Canvas(Modifier.fillMaxSize()) {
                 val r = radius
                 drawCircle(color = Color(0xFF2F6FEE))
-                drawCircle(color = Color(0x14000000), style = Stroke(width = r * 0.06f))
+                drawCircle(
+                    color = Color(0x14000000),
+                    style = Stroke(width = r * 0.06f)
+                )
+
                 val crossR = r * 0.22f
                 val stroke = r * 0.12f
                 drawLine(
@@ -370,16 +378,15 @@ fun KnotButtonWithResistance(
     }
 }
 
-// -------------------- Preview --------------------
 @Preview(showBackground = true)
 @Composable
-fun JellyDemo() {
+fun OmniDirectionDemo() {
     Box(
         Modifier
             .fillMaxSize()
             .background(Color(0xFFF7F7F7)),
         contentAlignment = Alignment.Center
     ) {
-        KnotButtonWithResistance(size = 96.dp)
+        KnotButtonOmniDirection(size = 96.dp)
     }
 }
